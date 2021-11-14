@@ -9,8 +9,8 @@ use crate::actor::{
     Id,
     Out,
 };
-use crate::util::HashableHashSet;
 use std::borrow::Cow;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::Hash;
 use std::ops::Range;
@@ -22,6 +22,7 @@ use std::time::Duration;
 /// TLA](https://lamport.azurewebsites.net/tla/auxiliary/auxiliary.html) for a thorough
 /// introduction to that concept. Use `()` if history is not needed to define the relevant
 /// properties of this system.
+#[derive(Clone)]
 pub struct ActorModel<A, C = (), H = ()>
 where A: Actor,
       H: Clone + Debug + Hash,
@@ -32,6 +33,7 @@ where A: Actor,
     pub init_history: H,
     pub init_network: Vec<Envelope<A::Msg>>,
     pub lossy_network: LossyNetwork,
+    pub ordered_network: OrderedNetwork,
     pub properties: Vec<Property<ActorModel<A, C, H>>>,
     pub record_msg_in: fn(cfg: &C, history: &H, envelope: Envelope<&A::Msg>) -> Option<H>,
     pub record_msg_out: fn(cfg: &C, history: &H, envelope: Envelope<&A::Msg>) -> Option<H>,
@@ -66,7 +68,103 @@ pub struct Envelope<Msg> { pub src: Id, pub dst: Id, pub msg: Msg }
 pub enum LossyNetwork { Yes, No }
 
 /// Represents a network of messages.
-pub type Network<Msg> = HashableHashSet<Envelope<Msg>>;
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(serde::Serialize)]
+pub struct Network<Msg>(BTreeMap<(Id, Id), VecDeque<Msg>>);
+
+impl<Msg> Envelope<&Msg> {
+    /// Converts an [`Envelope`] with a message reference to one that owns the message.
+    pub fn to_cloned_msg(&self) -> Envelope<Msg>
+    where Msg: Clone,
+    {
+        Envelope {
+            src: self.src,
+            dst: self.dst,
+            msg: self.msg.clone(),
+        }
+    }
+}
+
+use std::iter::FromIterator;
+impl<Msg> FromIterator<Envelope<Msg>> for Network<Msg> {
+    fn from_iter<T>(x: T) -> Self
+    where T: IntoIterator<Item = Envelope<Msg>>
+    {
+        let mut map = BTreeMap::new();
+        for Envelope { src, dst, msg } in x.into_iter() {
+            map.entry((src, dst))
+                .or_insert(VecDeque::with_capacity(1))
+                .push_back(msg);
+        }
+        Self(map)
+    }
+}
+
+impl<Msg> Network<Msg> {
+    /// Construct a network.
+    pub(crate) fn new() -> Self {
+        Self(Default::default())
+    }
+
+    /// Returns an iterator over envelopes in the network.
+    pub fn iter(&self) -> impl Iterator<Item=Envelope<&Msg>> {
+        self.0.iter().flat_map(|(&(src, dst), messages)| {
+            messages.iter().map(move |msg| Envelope { src, dst, msg })
+        })
+    }
+
+    /// Returns the number of messages in the network.
+    pub fn len(&self) -> usize {
+        let mut count = 0;
+        for messages in self.0.values() {
+            count += messages.len();
+        }
+        count
+    }
+
+    /// Sends a message.
+    fn send(&mut self, envelope: Envelope<Msg>) {
+        self.0.entry((envelope.src, envelope.dst))
+            .or_insert(VecDeque::with_capacity(1))
+            .push_back(envelope.msg);
+    }
+
+    /// Removes a message.
+    fn remove(&mut self, envelope: &Envelope<Msg>)
+    where Msg: PartialEq,
+    {
+        // Find the flow, then find the message in the flow, and finally remove the message from
+        // the flow. Flows must be non-empty (to ensure removing a message is the inverse of adding
+        // it), so also canonicalize by deleting the entire flow if it would be empty after
+        // removing the message.
+        use std::collections::btree_map::Entry;
+        let flow_entry = match self.0.entry((envelope.src, envelope.dst)) {
+            Entry::Vacant(_) => panic!("flow not found. src={:?}, dst={:?}", envelope.src, envelope.dst),
+            Entry::Occupied(flow) => flow,
+        };
+        let i = flow_entry.get().iter().position(|x| x == &envelope.msg).expect("message not found");
+        if flow_entry.get().len() > 1 {
+            flow_entry.into_mut().remove(i);
+        } else {
+            flow_entry.remove();
+        }
+    }
+}
+
+/// Indicates whether directed message flows between pairs of actors are ordered or not. Does not
+/// indicate any ordering across different flows. Each direction for a pair of actors is a
+/// different flow.
+///
+/// # See Also
+///
+/// You can set this flag with [`ActorModel::ordered_network`].
+///
+/// The [`ordered_reliable_link`] module partially implements this contract as long as actors do
+/// not restart. A later version of the module and checker will account for actor restarts.
+///
+/// [`ordered_reliable_link`]: crate::actor::ordered_reliable_link
+#[derive(Copy, Clone, PartialEq)]
+pub enum OrderedNetwork { Yes, No }
 
 /// The specific timeout value is not relevant for model checking, so this helper can be used to
 /// generate an arbitrary timeout range. The specific value is subject to change, so this helper
@@ -97,6 +195,7 @@ where A: Actor,
             init_history,
             init_network: Default::default(),
             lossy_network: LossyNetwork::No,
+            ordered_network: OrderedNetwork::No,
             properties: Default::default(),
             record_msg_in: |_, _, _| None,
             record_msg_out: |_, _, _| None,
@@ -133,6 +232,18 @@ where A: Actor,
     /// Defines whether the network loses messages or not.
     pub fn lossy_network(mut self, lossy_network: LossyNetwork) -> Self {
         self.lossy_network = lossy_network;
+        self
+    }
+
+    /// Defines whether directed message flows between pairs of actors are ordered or not. Does not
+    /// enforce any ordering across different flows. Each direction for a pair of actors is a
+    /// different flow.
+    ///
+    /// # See Also
+    ///
+    /// The [`OrderedNetwork`] enum provides additional relevant documentation.
+    pub fn ordered_network(mut self, ordered_network: OrderedNetwork) -> Self {
+        self.ordered_network = ordered_network;
         self
     }
 
@@ -185,7 +296,7 @@ where A: Actor,
                     {
                         state.history = history;
                     }
-                    state.network.insert(Envelope { src: id, dst, msg });
+                    state.network.send(Envelope { src: id, dst, msg });
                 },
                 Command::SetTimer(_) => {
                     // must use the index to infer how large as actor state may not be initialized yet
@@ -210,17 +321,22 @@ where A: Actor,
     type Action = ActorModelAction<A::Msg>;
 
     fn init_states(&self) -> Vec<Self::State> {
+        if self.duplicating_network == DuplicatingNetwork::Yes
+            && self.ordered_network == OrderedNetwork::Yes
+        {
+            panic!("Stateright does not currently support duplicating ordered networks");
+        }
+
         let mut init_sys_state = ActorModelState {
             actor_states: Vec::with_capacity(self.actors.len()),
             history: self.init_history.clone(),
             is_timer_set: Vec::new(),
-            network: Network::with_hasher(
-                crate::stable::build_hasher()), // for consistent discoveries
+            network: Network::new(),
         };
 
         // init the network
         for e in self.init_network.clone() {
-            init_sys_state.network.insert(e);
+            init_sys_state.network.send(e);
         }
 
         // init each actor
@@ -236,14 +352,20 @@ where A: Actor,
     }
 
     fn actions(&self, state: &Self::State, actions: &mut Vec<Self::Action>) {
-        for env in &state.network {
+        let mut prev_channel = None;
+        for env in state.network.iter() {
             // option 1: message is lost
             if self.lossy_network == LossyNetwork::Yes {
-                actions.push(ActorModelAction::Drop(env.clone()));
+                actions.push(ActorModelAction::Drop(env.to_cloned_msg()));
             }
 
             // option 2: message is delivered
             if usize::from(env.dst) < self.actors.len() {
+                if self.ordered_network == OrderedNetwork::Yes {
+                    let curr_channel = (env.src, env.dst);
+                    if prev_channel == Some(curr_channel) { continue; } // queued behind previous
+                    prev_channel = Some(curr_channel);
+                }
                 actions.push(ActorModelAction::Deliver { src: env.src, dst: env.dst, msg: env.msg.clone() });
             }
         }
@@ -708,6 +830,73 @@ mod test {
                 .checker().spawn_bfs().join()
                 .unique_state_count(),
             1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Stateright does not currently support duplicating ordered networks")]
+    fn panics_for_duplicating_ordered_network() {
+        ActorModel::new((), ())
+            .actors(vec![(), ()])
+            .property(Expectation::Always, "", |_, _| true)
+            .duplicating_network(DuplicatingNetwork::Yes)
+            .ordered_network(OrderedNetwork::Yes)
+            .checker().spawn_dfs().join();
+    }
+
+    #[test]
+    fn handles_ordered_network_flag() {
+        #[derive(Clone)]
+        struct OrderedNetworkActor;
+        impl Actor for OrderedNetworkActor {
+            type Msg = u8;
+            type State = Vec<u8>;
+            fn on_start(&self, id: Id, o: &mut Out<Self>) -> Self::State {
+                if id == 0.into() {
+                    // Count down.
+                    o.send(1.into(), 2);
+                    o.send(1.into(), 1);
+                }
+                Vec::new()
+            }
+            fn on_msg(&self, _: Id, state: &mut Cow<Self::State>,
+                      _: Id, msg: Self::Msg, _: &mut Out<Self>)
+            {
+                state.to_mut().push(msg);
+            }
+        }
+
+        let model = ActorModel::new((), ())
+            .actors(vec![OrderedNetworkActor, OrderedNetworkActor])
+            .property(Expectation::Always, "", |_, _| true)
+            .duplicating_network(DuplicatingNetwork::No);
+
+        // Fewer states if network is ordered.
+        let (recorder, accessor) = StateRecorder::new_with_accessor();
+        model.clone().ordered_network(OrderedNetwork::Yes)
+            .checker().visitor(recorder).spawn_bfs().join();
+        let recipient_states: Vec<Vec<u8>> = accessor().into_iter().map(|s| {
+            (*s.actor_states[1]).clone()
+        }).collect();
+        assert_eq!(recipient_states, vec![
+            vec![],
+            vec![2],
+            vec![2, 1],
+        ]);
+
+        // More states if network is not ordered.
+        let (recorder, accessor) = StateRecorder::new_with_accessor();
+        model.clone().ordered_network(OrderedNetwork::No)
+            .checker().visitor(recorder).spawn_bfs().join();
+        let recipient_states: Vec<Vec<u8>> = accessor().into_iter().map(|s| {
+            (*s.actor_states[1]).clone()
+        }).collect();
+        assert_eq!(recipient_states, vec![
+            vec![],
+            vec![2],
+            vec![1],
+            vec![2, 1],
+            vec![1, 2],
+        ]);
     }
 
     #[test]

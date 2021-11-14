@@ -138,6 +138,8 @@ mod checker;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 #[cfg(test)]
+use lazy_static;
+#[cfg(test)]
 mod test_util;
 
 pub mod actor;
@@ -328,16 +330,12 @@ impl Model for () {
 
 // Helpers for stable hashing, wherein hashes should not vary across builds.
 mod stable {
-    use ahash::{AHasher, RandomState};
+    use ahash::AHasher;
 
     const KEY1: u64 = 123_456_789_987_654_321;
     const KEY2: u64 = 98_765_432_123_456_789;
 
     pub(crate) fn hasher() -> AHasher {
         AHasher::new_with_keys(KEY1, KEY2)
-    }
-
-    pub(crate) fn build_hasher() -> RandomState {
-        RandomState::with_seeds(KEY1, KEY2)
     }
 }

@@ -483,15 +483,22 @@ mod test {
             .visitor(recorder)
             .spawn_bfs()
             .join();
-        let messages_by_state: Vec<_> = accessor().into_iter().map(|s| {
+        let mut messages_by_state: Vec<_> = accessor().into_iter().map(|s| {
             let mut messages: Vec<_> = s.network
-                .into_iter()
-                .map(|e| e.msg)
+                .iter()
+                .map(|e| e.msg.clone())
                 .collect();
             messages.sort();
             messages
         }).collect();
-        assert_eq!(messages_by_state, vec![
+        messages_by_state.sort_by(|x, y| {
+            // Sort by length, then by content.
+            match x.len().cmp(&y.len()) {
+                std::cmp::Ordering::Equal => x.cmp(y),
+                order => order,
+            }
+        });
+        assert_eq!(messages_by_state, [
             vec!['A', 'C'],
             vec!['A', 'B', 'C'],
             vec!['A', 'C', 'D'],
