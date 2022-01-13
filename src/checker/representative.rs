@@ -49,7 +49,7 @@
 ///     // ... etc ...
 /// }
 /// impl Rewrite<Pid> for ProcessState {
-///     fn rewrite(&self, plan: &RewritePlan<Pid>) -> Self {
+///     fn rewrite<S>(&self, plan: &RewritePlan<Pid,S>) -> Self {
 ///         Self {
 ///             program_counter: self.program_counter.rewrite(plan), // no-op (cannot contain `Pid`)
 ///             parent: self.parent.rewrite(plan),
