@@ -29,6 +29,7 @@ where A: Actor,
     pub actors: Vec<A>,
     pub cfg: C,
     pub duplicating_network: DuplicatingNetwork,
+    pub finite_network: FiniteNetwork,
     pub init_history: H,
     pub init_network: Vec<Envelope<A::Msg>>,
     pub lossy_network: LossyNetwork,
@@ -53,6 +54,11 @@ pub enum ActorModelAction<Msg> {
 /// are forgotten once delivered, which can improve model checking performance.
 #[derive(Copy, Clone, PartialEq)]
 pub enum DuplicatingNetwork { Yes, No }
+
+/// Indicates whether the network has finite channels messages.
+/// If enabled messages sent over the bound are dropped
+#[derive(Copy, Clone, PartialEq)]
+pub enum FiniteNetwork { Yes(usize), No }
 
 /// Indicates the source and destination for a message.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -94,6 +100,7 @@ where A: Actor,
             actors: Vec::new(),
             cfg,
             duplicating_network: DuplicatingNetwork::Yes,
+            finite_network: FiniteNetwork::No,
             init_history,
             init_network: Default::default(),
             lossy_network: LossyNetwork::No,
@@ -121,6 +128,12 @@ where A: Actor,
     /// Defines whether the network duplicates messages or not.
     pub fn duplicating_network(mut self, duplicating_network: DuplicatingNetwork) -> Self {
         self.duplicating_network = duplicating_network;
+        self
+    }
+
+    /// Defines whether the network channels are finite or not.
+    pub fn finite_network(mut self, finite_network: FiniteNetwork) -> Self {
+        self.finite_network = finite_network;
         self
     }
 
@@ -178,14 +191,30 @@ where A: Actor,
         for c in commands {
             match c {
                 Command::Send(dst, msg) => {
-                    if let Some(history) = (self.record_msg_out)(
-                        &self.cfg,
-                        &state.history,
-                        Envelope { src: id, dst, msg: &msg })
-                    {
-                        state.history = history;
+                    if let FiniteNetwork::Yes(l) = self.finite_network {
+                        let count = state.network.iter()
+                            .filter(|Envelope{src:s,dst:d,..}| *s == id && *d == dst)
+                            .count();
+                        if count < l {
+                            if let Some(history) = (self.record_msg_out)(
+                                &self.cfg,
+                                &state.history,
+                                Envelope { src: id, dst, msg: &msg })
+                            {
+                                state.history = history;
+                            }
+                            state.network.insert(Envelope { src: id, dst, msg });
+                        }
+                    } else {
+                        if let Some(history) = (self.record_msg_out)(
+                            &self.cfg,
+                            &state.history,
+                            Envelope { src: id, dst, msg: &msg })
+                        {
+                            state.history = history;
+                        }
+                        state.network.insert(Envelope { src: id, dst, msg });
                     }
-                    state.network.insert(Envelope { src: id, dst, msg });
                 },
                 Command::SetTimer(_) => {
                     // must use the index to infer how large as actor state may not be initialized yet

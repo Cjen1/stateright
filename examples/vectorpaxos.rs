@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use stateright::{Model, Rewrite, RewritePlan, Checker, Expectation, Representative};
-use stateright::actor::{Actor, Out, Id, ActorModelState, majority, ActorModel, Envelope, DuplicatingNetwork};
+use stateright::actor::{Actor, Out, Id, ActorModelState, majority, ActorModel, Envelope, DuplicatingNetwork, FiniteNetwork};
 use stateright::actor::write_once_register::{WORegisterActor, WORegisterActorState, WORegisterMsg, WORegisterMsg::*};
 //use stateright::semantics::write_once_register::WORegister;
 //use stateright::semantics::LinearizabilityTester;
@@ -746,20 +746,19 @@ fn main() -> Result<(), pico_args::Error> {
 
     let mut args = pico_args::Arguments::from_env();
     match args.subcommand()?.as_deref() {
-        Some("check") => {
+        Some("check-subspace") => {
             let client_count = args.opt_free_from_str()?
                 .unwrap_or(2);
             let proposer_count = args.opt_free_from_str()?
                 .unwrap_or(2);
             let acceptor_count = args.opt_free_from_str()?
                 .unwrap_or(3);
-            //let channel_length = args.opt_free_from_str()?
-            //    .unwrap_or(1);
+            let channel_length = args.opt_free_from_str()?
+                .unwrap_or(1);
             let cfg = VPaxosModelCfg {
                     client_count,
                     proposer_count,
                     acceptor_count,
-            //        channel_length,
                 };
             println!("Model checking Single Shot VecPaxos with {:?} config", cfg);
             cfg.into_model()
@@ -773,8 +772,30 @@ fn main() -> Result<(), pico_args::Error> {
                         }
                     }
                     true
-                }
-                )
+                })
+                .finite_network(FiniteNetwork::Yes(channel_length))
+                .checker()
+                .threads(num_cpus::get())
+                .symmetry_fn(symmetry_fn)
+                .spawn_dfs().report(&mut std::io::stdout());
+        }
+        Some("check-full") => {
+            let client_count = args.opt_free_from_str()?
+                .unwrap_or(2);
+            let proposer_count = args.opt_free_from_str()?
+                .unwrap_or(2);
+            let acceptor_count = args.opt_free_from_str()?
+                .unwrap_or(3);
+            let channel_length = args.opt_free_from_str()?
+                .unwrap_or(1);
+            let cfg = VPaxosModelCfg {
+                    client_count,
+                    proposer_count,
+                    acceptor_count,
+                };
+            println!("Model checking Single Shot VecPaxos with {:?} config", cfg);
+            cfg.into_model()
+                .finite_network(FiniteNetwork::Yes(channel_length))
                 .checker()
                 .threads(num_cpus::get())
                 .symmetry_fn(symmetry_fn)
