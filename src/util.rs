@@ -79,6 +79,12 @@ impl<V> HashableHashSet<V> {
     }
 }
 
+impl<V, S> From<HashSet<V, S>> for HashableHashSet<V,S> {
+    fn from(s: HashSet<V, S>) -> Self {
+        HashableHashSet(s)
+    }
+}
+
 impl<V, S> HashableHashSet<V, S> {
     #[inline]
     pub fn with_hasher(hasher: S) -> Self {
