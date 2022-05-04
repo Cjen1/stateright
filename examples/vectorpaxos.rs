@@ -917,8 +917,7 @@ fn main() -> Result<(), pico_args::Error> {
                 .finite_network(FiniteNetwork::Yes(channel_length))
                 .checker()
                 .threads(num_cpus::get())
-                //.symmetry_fn(symmetry_fn)
-                .spawn_dfs().report(&mut std::io::stdout());
+                .spawn_bfs_sym().report(&mut std::io::stdout());
         }
         Some("check-full") => {
             let client_count = args.opt_free_from_str()?
@@ -940,7 +939,7 @@ fn main() -> Result<(), pico_args::Error> {
                 .checker()
                 .threads(num_cpus::get())
                 .symmetry_fn(symmetry_fn)
-                .spawn_dfs().report(&mut std::io::stdout());
+                .spawn_bfs_sym().report(&mut std::io::stdout());
         }
         Some("explore") => {
             let client_count = args.opt_free_from_str()?

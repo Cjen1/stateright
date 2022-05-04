@@ -1,6 +1,7 @@
 //! Private module for selective re-export.
 
 mod bfs;
+mod bfs_sym;
 mod dfs;
 mod explorer;
 mod path;
@@ -127,6 +128,23 @@ impl<M: Model> CheckerBuilder<M> {
     {
         bfs::BfsChecker::spawn(self)
     }
+
+    /// Spawns a breadth-first search model checker. This traversal strategy uses more memory than
+    /// [`CheckerBuilder::spawn_dfs`] but will find the shortest [`Path`] to each discovery if
+    /// checking is single threadeded (the default behavior, which [`CheckerBuilder::threads`]
+    /// overrides).
+    ///
+    /// This call does not block the current thread. Call [`Checker::join`] to block until checking
+    /// completes.
+    #[must_use = "Checkers run on background threads. \
+                  Consider calling join() or report(...), for example."]
+    pub fn spawn_bfs_sym(self) -> impl Checker<M>
+    where M: Model + Send + Sync + 'static,
+          M::State: Hash + Send + Sync + 'static,
+    {
+        bfs_sym::BfsChecker::spawn(self)
+    }
+
 
     /// Spawns a depth-first search model checker. This traversal strategy uses dramatically less
     /// memory than [`CheckerBuilder::spawn_bfs`] at the cost of not finding the shortest [`Path`]
