@@ -15,6 +15,15 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 
 // This module is a feasibility prototype for an exhaustively checked variant of Paxos
+//
+// Checking 2 clients (and hence 2 values), 2 proposers, 1 acceptor and at most one message per
+// channel, it completed in 22 hrs with 9M states after exploring 51M
+//
+// $> cargo run --example vectorpaxos check-full 2 2 1 1
+// ...
+// Done. states=51,618,942, unique=9,811,774, sec=77111
+//
+// TLA+ spec:
 // 
 // ProposerState:
 //   id \in ProposerIds
